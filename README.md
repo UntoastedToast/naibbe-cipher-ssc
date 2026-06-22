@@ -1,12 +1,26 @@
-# The Naibbe cipher: a substitution cipher that mimics the Voynich Manuscript
+# The Naibbe Cipher: Scribal Habits Simulation
 
-This repository contains code and datasets associated with the paper:
+> **Note:** This repository is a fork of Michael A. Greshko's original Naibbe cipher implementation. It extends the codebase by adding simulations of scribal habits (`naibbe_habit.py` and `naibbe_quire.py`).
+> 
+> This implementation was created in the context of the digital humanities exercise "Das Voynich Manuskript als Forschungsobjekt" at the IDH (Institut für Digital Humanities), University of Cologne.
+
+## Project Description
+
+While the original Naibbe cipher successfully encrypts Latin and Italian texts into Voynich-like ciphertext, this fork investigates the impact of simulated *scribal habits* on the statistical properties of the resulting text. By implementing these habits, we aim to test hypotheses regarding the distinct autocorrelations found in the original Voynich Manuscript.
+
+This project is an educational exploration within the Digital Humanities, building upon the theoretical foundations laid by Greshko's work.
+
+---
+
+## Original Work: The Naibbe Cipher
+
+This project builds entirely on the work of Michael A. Greshko. The original repository contains the foundational code and datasets associated with the following paper:
 
 > Greshko, Michael A. (2025). The Naibbe cipher: a substitution cipher that encrypts
 Latin and Italian as Voynich Manuscript-like ciphertext.
 Cryptologia. https://doi.org/10.1080/01611194.2025.2566408
   
-## Abstract
+### Original Abstract
 
 In the work represented here and in the associated study, I investigate
 the hypothesis that the Voynich Manuscript (MS 408, Yale University Beinecke
@@ -21,7 +35,7 @@ that the so-called “ciphertext hypothesis” for the Voynich Manuscript remain
 viable, while also placing constraints on plausible substitution cipher
 structures.
 
-## Data and extended output
+### Original Data and extended output
 
 Additional datasets, including the original Microsoft Excel implementations of
 the Naibbe cipher and Voynichesque, can be found at:
