@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Build / Distribution ---
+dist/
+build/
+*.whl
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+.Rhistory
+.Rapp.history
+.Rproj.user/
+
+# --- Project: agent session state ---
+.slim/
+.workspace/
+.agent_state/
+
+# --- Secrets (safety net) ---
+.env
+.env.*
+!.env.example
