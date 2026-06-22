@@ -1,18 +1,18 @@
 """
 Quire extension of the Naibbe cipher.
 
-This module implements a simulation of quire-based encryption to explore 
-whether the physical construction of the Voynich Manuscript (VMS) 
-contributes to its long-range autocorrelations. 
+This module implements a simulation of quire-based encryption to explore
+whether the physical construction of the Voynich Manuscript (VMS)
+contributes to its long-range autocorrelations.
 
 Notes
 -----
-The VMS is made of quires of multiple bifolia. If a scribe encrypted the 
-text one bifolio at a time rather than in the final narrative order, they 
-could nonrandomly reuse tokens while encrypting across a given bifolio. 
-When the bifolio is folded and bound into a quire, these localized token 
-reuses produce long-range correlations across pages that are physically 
-far apart in the final text. This hypothesis is explored and tested as 
+The VMS is made of quires of multiple bifolia. If a scribe encrypted the
+text one bifolio at a time rather than in the final narrative order, they
+could nonrandomly reuse tokens while encrypting across a given bifolio.
+When the bifolio is folded and bound into a quire, these localized token
+reuses produce long-range correlations across pages that are physically
+far apart in the final text. This hypothesis is explored and tested as
 proposed in Greshko [1]_.
 
 References
@@ -60,6 +60,7 @@ encrypt_naibbe = naibbe_v2.encrypt_naibbe
 
 
 # === Page ↔ Bifolio mapping ================================================
+
 
 def _page_to_bifolio(page: int, n_bifolia: int) -> tuple[int, int]:
     """Map a reading-order page index to (bifolio_index, page_in_bifolio).
@@ -132,52 +133,100 @@ def _plain_sig(token: str) -> tuple:
 class BifolioMemory:
     """Bifolio-scoped glyph reuse buffer.
 
-    Stores (sig, glyph) pairs for the current bifolio. When a new
-    bifolio starts, the current buffer becomes the "previous bifolio"
-    buffer, enabling cross-bifolio reuse with probability
-    ``p_cross_bifolio``.
+    Stores (sig, glyph) pairs for the current bifolio in a dictionary for O(1) lookups.
+    When a new bifolio starts, the current buffer becomes the "previous bifolio"
+    buffer, enabling cross-bifolio reuse with probability ``p_cross_bifolio``.
     """
 
     def __init__(self, p_cross_bifolio: float = 0.1) -> None:
         if not (0.0 <= p_cross_bifolio <= 1.0):
             raise ValueError(
-                f"p_cross_bifolio must be in [0.0, 1.0], "
-                f"got {p_cross_bifolio}"
+                f"p_cross_bifolio must be in [0.0, 1.0], " f"got {p_cross_bifolio}"
             )
         self.p_cross_bifolio = p_cross_bifolio
-        self.current_buffer: list[tuple[tuple, str]] = []
-        self.previous_buffer: list[tuple[tuple, str]] = []
+        self.current_dict: dict[tuple, str] = {}
+        self.previous_dict: dict[tuple, str] = {}
 
     def new_bifolio(self) -> None:
         """Archive the current buffer and start a new one."""
-        self.previous_buffer = self.current_buffer
-        self.current_buffer = []
+        self.previous_dict = self.current_dict
+        self.current_dict = {}
 
-    def lookup(self, sig: tuple) -> str | None:
+    def lookup(self, sig: tuple, rng: random.Random) -> str | None:
         """Look up a sig in the current bifolio, then maybe the previous.
 
         Returns the glyph if found, else None.
         """
-        # First try current bifolio (most-recent first)
-        for entry_sig, glyph in reversed(self.current_buffer):
-            if entry_sig == sig:
-                return glyph
+        # First try current bifolio
+        glyph = self.current_dict.get(sig)
+        if glyph is not None:
+            return glyph
         # Then try previous bifolio with probability p_cross_bifolio
-        if self.p_cross_bifolio > 0 and random.random() < self.p_cross_bifolio:
-            for entry_sig, glyph in reversed(self.previous_buffer):
-                if entry_sig == sig:
-                    return glyph
+        if self.p_cross_bifolio > 0 and rng.random() < self.p_cross_bifolio:
+            return self.previous_dict.get(sig)
         return None
 
     def push(self, sig: tuple, glyph: str) -> None:
         """Store a (sig, glyph) pair in the current bifolio buffer."""
-        self.current_buffer.append((sig, glyph))
+        self.current_dict[sig] = glyph
 
     def __len__(self) -> int:
-        return len(self.current_buffer)
+        return len(self.current_dict)
 
 
 # === Deck-draw helper ===
+def _draw_bigram(
+    a: str,
+    b: str,
+    tables: dict,
+    glyph_map: dict,
+    use_78: bool,
+    deck: list[str],
+    deck_index: int,
+) -> tuple[str, list[str], int, int, bool]:
+    """Draw a bigram, handling ambiguity checks if UNAMBIGUOUS is True.
+    Returns (combined_glyph, deck, deck_index, retries_used, accepted).
+    """
+    retries_used = 0
+    if UNAMBIGUOUS:
+        accepted = False
+        glyph_prefix = ""
+        glyph_suffix = ""
+        for _ in range(MAX_BIGRAM_RETRIES):
+            table_prefix, deck, deck_index = _next_table(deck, deck_index, use_78)
+            code_prefix = tables[table_prefix][("prefix", a)]
+            glyph_prefix = glyph_map.get(code_prefix, code_prefix)
+
+            table_suffix, deck, deck_index = _next_table(deck, deck_index, use_78)
+            code_suffix = tables[table_suffix][("suffix", b)]
+            glyph_suffix = glyph_map.get(code_suffix, code_suffix)
+
+            combined = glyph_prefix + glyph_suffix
+
+            if combined in unigram_glyphs:
+                retries_used += 1
+                continue
+
+            pairs = bigram_catalog.get(combined, set())
+            if any(pair != (code_prefix, code_suffix) for pair in pairs):
+                retries_used += 1
+                continue
+
+            accepted = True
+            break
+        return glyph_prefix + glyph_suffix, deck, deck_index, retries_used, accepted
+    else:
+        table_prefix, deck, deck_index = _next_table(deck, deck_index, use_78)
+        code_prefix = tables[table_prefix][("prefix", a)]
+        glyph_prefix = glyph_map.get(code_prefix, code_prefix)
+
+        table_suffix, deck, deck_index = _next_table(deck, deck_index, use_78)
+        code_suffix = tables[table_suffix][("suffix", b)]
+        glyph_suffix = glyph_map.get(code_suffix, code_suffix)
+
+        return glyph_prefix + glyph_suffix, deck, deck_index, 0, True
+
+
 def _next_table(
     deck: list[str], deck_index: int, use_78: bool
 ) -> tuple[str, list[str], int]:
@@ -204,22 +253,24 @@ def _encrypt_bifolio(
     deck_index: int,
     memory: BifolioMemory,
     p_reuse: float,
-) -> tuple[list[str], list[str], int]:
+    rng: random.Random,
+) -> tuple[list[str], list[str], int, int]:
     """Encrypt one bifolio's ngrams with bifolio-scoped reuse.
 
-    Returns (ciphertext_tokens, updated_deck, updated_deck_index).
-    The deck and deck_index are threaded through so the card sequence
-    is continuous across bifolia within a quire.
+    Returns ``(ciphertext_tokens, updated_deck, updated_deck_index,
+    retries_total)``. The deck and deck_index are threaded through so
+    the card sequence is continuous across bifolia within a quire.
     """
     ciphertext: list[str] = []
+    retries_total = 0
 
     for token in bifolio_ngrams:
         sig = _plain_sig(token)
 
         # Reuse hot path
-        cached_glyph = memory.lookup(sig)
+        cached_glyph = memory.lookup(sig, rng)
         if cached_glyph is not None:
-            if p_reuse >= 1.0 or (p_reuse > 0.0 and random.random() < p_reuse):
+            if p_reuse >= 1.0 or (p_reuse > 0.0 and rng.random() < p_reuse):
                 ciphertext.append(cached_glyph)
                 continue
 
@@ -234,67 +285,15 @@ def _encrypt_bifolio(
         else:
             # === Bigram (two independent table draws) ===
             a, b = token[0], token[1]
-            if UNAMBIGUOUS:
-                # === Ambiguity-safe bigram ===
-                accepted = False
-                glyph_prefix = ""
-                glyph_suffix = ""
-                for _ in range(MAX_BIGRAM_RETRIES):
-                    # Prefix
-                    table_prefix, deck, deck_index = _next_table(
-                        deck, deck_index, use_78
-                    )
-                    code_prefix = tables[table_prefix][("prefix", a)]
-                    glyph_prefix = glyph_map.get(code_prefix, code_prefix)
-
-                    # Suffix
-                    table_suffix, deck, deck_index = _next_table(
-                        deck, deck_index, use_78
-                    )
-                    code_suffix = tables[table_suffix][("suffix", b)]
-                    glyph_suffix = glyph_map.get(code_suffix, code_suffix)
-
-                    combined = glyph_prefix + glyph_suffix
-
-                    # 1) reject if equals any unigram glyph
-                    if combined in unigram_glyphs:
-                        naibbe_v2.ambiguity_retries += 1
-                        continue
-
-                    # 2) reject if any other (prefix, suffix) pair yields same string
-                    pairs = bigram_catalog.get(combined, set())
-                    if any(pair != (code_prefix, code_suffix) for pair in pairs):
-                        naibbe_v2.ambiguity_retries += 1
-                        continue
-
-                    # Accepted.
-                    ciphertext.append(combined)
-                    memory.push(sig, combined)
-                    accepted = True
-                    break
-
-                if not accepted:
-                    # Exhausted retries; emit the last attempt to avoid deadlock.
-                    ciphertext.append(glyph_prefix + glyph_suffix)
-            else:
-                # === Standard bigram (no collision checks) ===
-                table_prefix, deck, deck_index = _next_table(
-                    deck, deck_index, use_78
-                )
-                code_prefix = tables[table_prefix][("prefix", a)]
-                glyph_prefix = glyph_map.get(code_prefix, code_prefix)
-
-                table_suffix, deck, deck_index = _next_table(
-                    deck, deck_index, use_78
-                )
-                code_suffix = tables[table_suffix][("suffix", b)]
-                glyph_suffix = glyph_map.get(code_suffix, code_suffix)
-
-                combined = glyph_prefix + glyph_suffix
-                ciphertext.append(combined)
+            combined, deck, deck_index, retries, accepted = _draw_bigram(
+                a, b, tables, glyph_map, use_78, deck, deck_index
+            )
+            retries_total += retries
+            ciphertext.append(combined)
+            if accepted:
                 memory.push(sig, combined)
 
-    return ciphertext, deck, deck_index
+    return ciphertext, deck, deck_index, retries_total
 
 
 # === Full encryption function ===
@@ -308,7 +307,9 @@ def encrypt_naibbe_quire(
     p_reuse: float = 0.3,
     p_cross_bifolio: float = 0.1,
     pre_plaintext_file=None,
-) -> list[str]:
+    rng: random.Random | None = None,
+    ngrams: list[str] | None = None,
+) -> tuple[list[str], int]:
     """Encrypt plaintext with quire-based bifolio structure.
 
     This function tests hypotheses proposed in Greshko (2025), "The Naibbe cipher
@@ -344,38 +345,54 @@ def encrypt_naibbe_quire(
     p_cross_bifolio : float
         Probability of looking in the previous bifolio's buffer (0.0-1.0).
     pre_plaintext_file : file-like, optional
-        If given, the respaced plaintext is written to it.
+        If given and ``ngrams`` is ``None``, the respaced plaintext is
+        written to it. Ignored when ``ngrams`` is provided (the caller
+        is responsible for pre-plaintext output in that case).
+    rng : random.Random, optional
+        RNG used for the reuse and cross-bifolio coin flips. If
+        ``None``, a new ``random.Random()`` is created. Note:
+        respacing and deck shuffling always use the global ``random``
+        module (seed it via ``random.seed()`` for reproducibility).
+    ngrams : list[str], optional
+        Pre-tokenized ngrams from :func:`respace_plaintext`. If
+        ``None``, the plaintext is tokenized internally. Providing
+        pre-tokenized ngrams avoids double-tokenization (which would
+        perturb the global random state and produce mismatched token
+        counts when splitting by line).
+
+    Returns
+    -------
+    tuple[list[str], int]
+        ``(ciphertext_tokens, ambiguity_retries)``.
     """
     # Validation
     if bifolia_per_quire < 1:
-        raise ValueError(
-            f"bifolia_per_quire must be >= 1, got {bifolia_per_quire}"
-        )
+        raise ValueError(f"bifolia_per_quire must be >= 1, got {bifolia_per_quire}")
     if tokens_per_page < 1:
-        raise ValueError(
-            f"tokens_per_page must be >= 1, got {tokens_per_page}"
-        )
+        raise ValueError(f"tokens_per_page must be >= 1, got {tokens_per_page}")
     if not (0.0 <= p_reuse <= 1.0):
-        raise ValueError(
-            f"p_reuse must be in [0.0, 1.0], got {p_reuse}"
-        )
+        raise ValueError(f"p_reuse must be in [0.0, 1.0], got {p_reuse}")
     if not (0.0 <= p_cross_bifolio <= 1.0):
         raise ValueError(
             f"p_cross_bifolio must be in [0.0, 1.0], got {p_cross_bifolio}"
         )
 
-    ngrams = respace_plaintext(plaintext, pre_plaintext_file)
+    if ngrams is None:
+        ngrams = respace_plaintext(plaintext, pre_plaintext_file)
     quire_size = 4 * bifolia_per_quire * tokens_per_page
 
     # Split into quires
-    quires = [ngrams[i:i + quire_size] for i in range(0, len(ngrams), quire_size)]
+    quires = [ngrams[i : i + quire_size] for i in range(0, len(ngrams), quire_size)]
 
     all_ciphertext: list[str] = []
+    total_retries = 0
+    if rng is None:
+        rng = random.Random()
 
     for quire_ngrams in quires:
         # Split into pages
         pages = [
-            quire_ngrams[i:i + tokens_per_page]
+            quire_ngrams[i : i + tokens_per_page]
             for i in range(0, len(quire_ngrams), tokens_per_page)
         ]
 
@@ -408,17 +425,27 @@ def encrypt_naibbe_quire(
                     page_reading_indices.append(reading_page)
 
             # Encrypt this bifolio's ngrams
-            bifolio_ciphertext, deck, deck_index = _encrypt_bifolio(
-                bifolio_pages_ngrams, tables, glyph_map, use_78,
-                deck, deck_index, memory, p_reuse,
+            bifolio_ciphertext, deck, deck_index, retries = _encrypt_bifolio(
+                bifolio_pages_ngrams,
+                tables,
+                glyph_map,
+                use_78,
+                deck,
+                deck_index,
+                memory,
+                p_reuse,
+                rng,
             )
+            total_retries += retries
 
             # Split the ciphertext back into page-sized chunks
             # and place them at their reading-order positions
             token_offset = 0
             for reading_page in page_reading_indices:
                 page_token_count = len(pages[reading_page])
-                page_ct = bifolio_ciphertext[token_offset:token_offset + page_token_count]
+                page_ct = bifolio_ciphertext[
+                    token_offset : token_offset + page_token_count
+                ]
                 quire_ciphertext[reading_page] = page_ct
                 token_offset += page_token_count
 
@@ -427,7 +454,7 @@ def encrypt_naibbe_quire(
             if page_ct is not None:
                 all_ciphertext.extend(page_ct)
 
-    return all_ciphertext
+    return all_ciphertext, total_retries
 
 
 # === File-level encryption driver (shared by CLI and eval) =================
@@ -438,29 +465,36 @@ def iter_encrypted_lines(
     tokens_per_page: int,
     p_reuse: float,
     p_cross_bifolio: float,
+    rng: random.Random,
     pre_plaintext_file=None,
 ):
-    """Yield ``(cleaned, tokens)`` for each line of ``input_path``.
+    """Yield ``(cleaned, tokens, retries)`` for each line of ``input_path``.
 
     The full file is encrypted as one block (the bifolio rearrangement
     requires the complete token sequence), then tokens are yielded
     line-by-line using the original line boundaries.
+
+    The plaintext is tokenized **once** (not per-line) because
+    :func:`respace_plaintext` forces a unigram at the last character of
+    its input. Per-line tokenization would insert spurious unigram
+    boundaries at every line end, causing token counts to diverge from
+    the full-text tokenization. Tokenizing once also avoids perturbing
+    the global random state with counting calls before encryption.
     """
     # Read all lines and clean them
     all_cleaned: list[str] = []
     with open(input_path, "r", encoding="utf-8") as fin:
         for line in fin:
-            cleaned = clean_line(line)
-            if cleaned:
-                all_cleaned.append(cleaned)
-            else:
-                all_cleaned.append("")
+            all_cleaned.append(clean_line(line))
 
-    # Concatenate all cleaned lines into one plaintext
+    # Concatenate all cleaned lines into one plaintext and tokenize ONCE.
     full_plaintext = "".join(all_cleaned)
+    all_ngrams = respace_plaintext(full_plaintext, pre_plaintext_file)
 
-    # Encrypt the full plaintext as one block
-    all_tokens = encrypt_naibbe_quire(
+    # Encrypt the full plaintext as one block, passing pre-tokenized ngrams
+    # so encrypt_naibbe_quire doesn't re-tokenize (which would double-consume
+    # global random state and produce a different tokenization).
+    all_tokens, total_retries = encrypt_naibbe_quire(
         full_plaintext,
         naibbe_tables,
         placeholder_to_glyph,
@@ -469,13 +503,39 @@ def iter_encrypted_lines(
         tokens_per_page=tokens_per_page,
         p_reuse=p_reuse,
         p_cross_bifolio=p_cross_bifolio,
-        pre_plaintext_file=pre_plaintext_file,
+        rng=rng,
+        ngrams=all_ngrams,
     )
 
-    # Yield the concatenated plaintext and all tokens as one block
-    # (the eval joins them all anyway, so one yield is sufficient)
-    if all_tokens:
-        yield full_plaintext, all_tokens
+    # Assign tokens to lines by character position. Each token covers 1 or 2
+    # characters in the full plaintext; a token belongs to the line that
+    # contains its first character. A bigram spanning a line boundary is
+    # assigned to the line where it starts.
+    line_token_counts = [0] * len(all_cleaned)
+    char_to_line: list[int] = []
+    for line_idx, cleaned in enumerate(all_cleaned):
+        char_to_line.extend([line_idx] * len(cleaned))
+
+    char_pos = 0
+    for token in all_ngrams:
+        if char_pos < len(char_to_line):
+            line_token_counts[char_to_line[char_pos]] += 1
+        char_pos += len(token)
+
+    # Yield line by line
+    token_idx = 0
+    yielded_retries = False
+    for line_idx, cleaned in enumerate(all_cleaned):
+        count = line_token_counts[line_idx]
+        if count > 0:
+            line_tokens = all_tokens[token_idx : token_idx + count]
+            token_idx += count
+            # Yield all retries on the first valid line for tracking
+            retries = total_retries if not yielded_retries else 0
+            yielded_retries = True
+            yield cleaned, line_tokens, retries
+        else:
+            yield "", [], 0
 
 
 # === CLI ===
@@ -532,15 +592,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--p-reuse",
         type=float,
         default=0.3,
-        help="Probability of reusing a cached glyph on a buffer hit "
-        "(0.0-1.0).",
+        help="Probability of reusing a cached glyph on a buffer hit " "(0.0-1.0).",
     )
     p.add_argument(
         "--p-cross-bifolio",
         type=float,
         default=0.1,
-        help="Probability of looking in the previous bifolio's buffer "
-        "(0.0-1.0).",
+        help="Probability of looking in the previous bifolio's buffer " "(0.0-1.0).",
     )
     p.add_argument(
         "--seed",
@@ -565,37 +623,44 @@ def main(argv: list[str] | None = None) -> None:
     """Entry point: encrypt an input file with quire-based bifolio structure."""
     args = parse_args(argv)
 
+    # Seed the global random module so that naibbe_v2 functions (which use
+    # the global random for respacing, deck shuffling, and space dropping)
+    # are reproducible. The local rng controls only the coin flips.
     if args.seed is not None:
         random.seed(args.seed)
+    rng = random.Random(args.seed)
 
     if args.bifolia_per_quire < 1:
         raise ValueError(
             f"--bifolia-per-quire must be >= 1, got {args.bifolia_per_quire}"
         )
     if args.tokens_per_page < 1:
-        raise ValueError(
-            f"--tokens-per-page must be >= 1, got {args.tokens_per_page}"
-        )
+        raise ValueError(f"--tokens-per-page must be >= 1, got {args.tokens_per_page}")
     if not (0.0 <= args.p_reuse <= 1.0):
-        raise ValueError(
-            f"--p-reuse must lie in [0.0, 1.0], got {args.p_reuse}"
-        )
+        raise ValueError(f"--p-reuse must lie in [0.0, 1.0], got {args.p_reuse}")
     if not (0.0 <= args.p_cross_bifolio <= 1.0):
         raise ValueError(
-            f"--p-cross-bifolio must lie in [0.0, 1.0], "
-            f"got {args.p_cross_bifolio}"
+            f"--p-cross-bifolio must lie in [0.0, 1.0], " f"got {args.p_cross_bifolio}"
         )
 
-    with open(args.output, "w", encoding="utf-8") as fout, \
-         open(args.respaced_output, "w", encoding="utf-8") as frespace, \
-         open(args.pre_plaintext_output, "w", encoding="utf-8") as fplain:
+    with (
+        open(args.output, "w", encoding="utf-8") as fout,
+        open(args.respaced_output, "w", encoding="utf-8") as frespace,
+        open(args.pre_plaintext_output, "w", encoding="utf-8") as fplain,
+    ):
 
-        for cleaned, encrypted_tokens in iter_encrypted_lines(
-            args.input, args.use_78,
-            args.bifolia_per_quire, args.tokens_per_page,
-            args.p_reuse, args.p_cross_bifolio,
+        total_ambiguity_retries = 0
+        for cleaned, encrypted_tokens, retries in iter_encrypted_lines(
+            args.input,
+            args.use_78,
+            args.bifolia_per_quire,
+            args.tokens_per_page,
+            args.p_reuse,
+            args.p_cross_bifolio,
+            rng,
             fplain,
         ):
+            total_ambiguity_retries += retries
             if cleaned:
                 line_out = " ".join(encrypted_tokens)
                 fout.write(line_out + "\n")
@@ -606,7 +671,7 @@ def main(argv: list[str] | None = None) -> None:
                 fplain.write("\n")
 
     if UNAMBIGUOUS:
-        print(f"Total ambiguity retries: {naibbe_v2.ambiguity_retries}")
+        print(f"Total ambiguity retries: {total_ambiguity_retries}")
 
     print(
         f"Quire stats: bifolia_per_quire={args.bifolia_per_quire}, "

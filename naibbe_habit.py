@@ -3,16 +3,16 @@ Habit extension of the Naibbe cipher.
 
 This module implements a simulation of scribal habits to test hypotheses
 regarding the autocorrelations found in the Voynich Manuscript.
-When a plaintext token recurs within a short visibility window, the 
-previously-written glyph is copied instead of drawing a fresh substitution 
-table card. This simulates a habit that fades off over time as the coder 
+When a plaintext token recurs within a short visibility window, the
+previously-written glyph is copied instead of drawing a fresh substitution
+table card. This simulates a habit that fades off over time as the coder
 notices the repetition.
 
 Notes
 -----
 This implementation is based on the hypotheses discussed in Greshko [1]_,
 which builds upon the idea of scribal habits proposed by Matlach, Janečková,
-and Dostál. These habits include non-stochastic bursts of table use 
+and Dostál. These habits include non-stochastic bursts of table use
 or line-by-line reuse of ciphertext word types.
 
 References
@@ -78,8 +78,7 @@ class ScribalHabit:
 
     Stores entries in a :class:`collections.deque` with a fixed
     ``maxlen``; the oldest entry is evicted automatically when the
-    buffer is full. Lookup scans in reverse insertion order
-    (most-recent first).
+    buffer is full. Lookup uses a dictionary for O(1) access.
 
     Parameters
     ----------
@@ -94,31 +93,85 @@ class ScribalHabit:
             )
         self.buffer_size: int = buffer_size
         self.buffer: collections.deque = collections.deque(maxlen=buffer_size)
+        self.fast_lookup: dict[tuple, str] = {}
+        self.sig_counts: collections.Counter = collections.Counter()
 
     def lookup(self, sig: tuple) -> tuple[tuple, str] | None:
-        """Return the most-recent entry whose ``sig`` matches, else ``None``.
-
-        Scans in reverse insertion order (most-recent first).
-        Returns the ``(sig, glyph)`` tuple; callers only need the glyph.
-        """
-        for entry in reversed(self.buffer):
-            if entry[0] == sig:
-                return entry
+        """Return the most-recent entry whose ``sig`` matches, else ``None``."""
+        glyph = self.fast_lookup.get(sig)
+        if glyph is not None:
+            return (sig, glyph)
         return None
 
     def push(self, sig: tuple, glyph: str) -> None:
-        """Append a new ``(sig, glyph)`` entry to the buffer.
-
-        If the buffer is full, the oldest entry is automatically
-        evicted by the underlying ``deque(maxlen=...)``.
-        """
+        """Append a new ``(sig, glyph)`` entry to the buffer."""
+        if len(self.buffer) == self.buffer_size:
+            old_sig, _ = self.buffer[0]
+            self.sig_counts[old_sig] -= 1
+            if self.sig_counts[old_sig] == 0:
+                del self.fast_lookup[old_sig]
+                del self.sig_counts[old_sig]
         self.buffer.append((sig, glyph))
+        self.fast_lookup[sig] = glyph
+        self.sig_counts[sig] += 1
 
     def __len__(self) -> int:
         return len(self.buffer)
 
 
 # === Deck-draw helper ===================================================
+def _draw_bigram(
+    a: str,
+    b: str,
+    tables: dict,
+    glyph_map: dict,
+    use_78: bool,
+    deck: list[str],
+    deck_index: int,
+) -> tuple[str, list[str], int, int, bool]:
+    """Draw a bigram, handling ambiguity checks if UNAMBIGUOUS is True.
+    Returns (combined_glyph, deck, deck_index, retries_used, accepted).
+    """
+    retries_used = 0
+    if UNAMBIGUOUS:
+        accepted = False
+        glyph_prefix = ""
+        glyph_suffix = ""
+        for _ in range(MAX_BIGRAM_RETRIES):
+            table_prefix, deck, deck_index = _next_table(deck, deck_index, use_78)
+            code_prefix = tables[table_prefix][("prefix", a)]
+            glyph_prefix = glyph_map.get(code_prefix, code_prefix)
+
+            table_suffix, deck, deck_index = _next_table(deck, deck_index, use_78)
+            code_suffix = tables[table_suffix][("suffix", b)]
+            glyph_suffix = glyph_map.get(code_suffix, code_suffix)
+
+            combined = glyph_prefix + glyph_suffix
+
+            if combined in unigram_glyphs:
+                retries_used += 1
+                continue
+
+            pairs = bigram_catalog.get(combined, set())
+            if any(pair != (code_prefix, code_suffix) for pair in pairs):
+                retries_used += 1
+                continue
+
+            accepted = True
+            break
+        return glyph_prefix + glyph_suffix, deck, deck_index, retries_used, accepted
+    else:
+        table_prefix, deck, deck_index = _next_table(deck, deck_index, use_78)
+        code_prefix = tables[table_prefix][("prefix", a)]
+        glyph_prefix = glyph_map.get(code_prefix, code_prefix)
+
+        table_suffix, deck, deck_index = _next_table(deck, deck_index, use_78)
+        code_suffix = tables[table_suffix][("suffix", b)]
+        glyph_suffix = glyph_map.get(code_suffix, code_suffix)
+
+        return glyph_prefix + glyph_suffix, deck, deck_index, 0, True
+
+
 def _next_table(
     deck: list[str], deck_index: int, use_78: bool
 ) -> tuple[str, list[str], int]:
@@ -148,7 +201,8 @@ def encrypt_naibbe_habit(
     pre_plaintext_file=None,
     habit: ScribalHabit | None = None,
     p_reuse: float = 0.0,
-) -> list[str]:
+    rng: random.Random | None = None,
+) -> tuple[list[str], int]:
     """Encrypt ``plaintext`` with optional ScribalHabit reuse buffer.
 
     This function tests hypotheses proposed in Greshko (2025), "The Naibbe cipher
@@ -183,18 +237,39 @@ def encrypt_naibbe_habit(
     p_reuse : float
         Probability of reusing a cached glyph on a buffer hit. Must
         lie in ``[0.0, 1.0]``.
+    rng : random.Random, optional
+        RNG used for the reuse coin flips. If ``None``, a new
+        ``random.Random()`` is created. Note: respacing and deck
+        shuffling always use the global ``random`` module (seed it
+        via ``random.seed()`` for reproducibility).
+
+    Returns
+    -------
+    tuple[list[str], int]
+        ``(ciphertext_tokens, ambiguity_retries)`` where
+        ``ambiguity_retries`` is the number of bigram retries during
+        this call.
     """
     # --- No habit: fall through to baseline draw ----------------------
+    # naibbe_v2.encrypt_naibbe increments the global naibbe_v2.ambiguity_retries
+    # counter but doesn't return it. We capture the delta to report the real
+    # retry count without modifying naibbe_v2.py.
     if habit is None:
-        return naibbe_v2.encrypt_naibbe(
+        retries_before = naibbe_v2.ambiguity_retries
+        ciphertext = naibbe_v2.encrypt_naibbe(
             plaintext, tables, glyph_map, use_78, pre_plaintext_file
         )
+        return ciphertext, naibbe_v2.ambiguity_retries - retries_before
 
     # --- Habit path -----------------------------------------------------
+    if rng is None:
+        rng = random.Random()
+
     ngrams = respace_plaintext(plaintext, pre_plaintext_file)
     ciphertext: list[str] = []
     deck = create_card_deck(use_78)
     deck_index = 0
+    retries_total = 0
 
     for token in ngrams:
         sig = _plain_sig(token)
@@ -202,7 +277,7 @@ def encrypt_naibbe_habit(
         # --- Reuse hot path --------------------------------------------
         entry = habit.lookup(sig)
         if entry is not None:
-            if p_reuse >= 1.0 or (p_reuse > 0.0 and random.random() < p_reuse):
+            if p_reuse >= 1.0 or (p_reuse > 0.0 and rng.random() < p_reuse):
                 # Scribe laziness: re-emit the cached glyph verbatim,
                 # skip the draw, skip the push.
                 ciphertext.append(entry[1])  # entry[1] is glyph
@@ -220,75 +295,15 @@ def encrypt_naibbe_habit(
         else:
             # === Bigram ===
             a, b = token[0], token[1]
-            if UNAMBIGUOUS:
-                # === Ambiguity-safe bigram ===
-                accepted = False
-                # Initialize so the fallback below is type-safe even if the
-                # retry loop were skipped (it never is -- MAX_BIGRAM_RETRIES >= 1
-                # -- but this satisfies static analysis and is harmless).
-                glyph_prefix = ""
-                glyph_suffix = ""
-                for _ in range(MAX_BIGRAM_RETRIES):
-                    # Prefix
-                    table_prefix, deck, deck_index = _next_table(
-                        deck, deck_index, use_78
-                    )
-                    code_prefix = tables[table_prefix][("prefix", a)]
-                    glyph_prefix = glyph_map.get(code_prefix, code_prefix)
-
-                    # Suffix
-                    table_suffix, deck, deck_index = _next_table(
-                        deck, deck_index, use_78
-                    )
-                    code_suffix = tables[table_suffix][("suffix", b)]
-                    glyph_suffix = glyph_map.get(code_suffix, code_suffix)
-
-                    combined = glyph_prefix + glyph_suffix
-
-                    # 1) reject if equals any unigram glyph
-                    if combined in unigram_glyphs:
-                        naibbe_v2.ambiguity_retries += 1
-                        continue
-
-                    # 2) reject if any other (prefix, suffix) pair yields same string
-                    pairs = bigram_catalog.get(combined, set())
-                    if any(pair != (code_prefix, code_suffix) for pair in pairs):
-                        naibbe_v2.ambiguity_retries += 1
-                        continue
-
-                    # Accepted.
-                    ciphertext.append(combined)
-                    habit.push(sig, combined)
-                    accepted = True
-                    break
-
-                if not accepted:
-                    # Exhausted retries; emit the last attempt to avoid deadlock
-                    # (mirrors naibbe_v2 fallback). Do NOT push to buffer: the
-                    # fallback glyph may violate the UNAMBIGUOUS invariant, and
-                    # the buffer's contract is "stores validated draws only".
-                    ciphertext.append(glyph_prefix + glyph_suffix)
-            else:
-                # === Standard bigram (no collision checks) ===
-                # Prefix
-                table_prefix, deck, deck_index = _next_table(
-                    deck, deck_index, use_78
-                )
-                code_prefix = tables[table_prefix][("prefix", a)]
-                glyph_prefix = glyph_map.get(code_prefix, code_prefix)
-
-                # Suffix
-                table_suffix, deck, deck_index = _next_table(
-                    deck, deck_index, use_78
-                )
-                code_suffix = tables[table_suffix][("suffix", b)]
-                glyph_suffix = glyph_map.get(code_suffix, code_suffix)
-
-                combined = glyph_prefix + glyph_suffix
-                ciphertext.append(combined)
+            combined, deck, deck_index, retries, accepted = _draw_bigram(
+                a, b, tables, glyph_map, use_78, deck, deck_index
+            )
+            retries_total += retries
+            ciphertext.append(combined)
+            if accepted:
                 habit.push(sig, combined)
 
-    return ciphertext
+    return ciphertext, retries_total
 
 
 # === File-level encryption driver (shared by CLI and eval) =============
@@ -297,21 +312,23 @@ def iter_encrypted_lines(
     use_78: bool,
     habit: ScribalHabit | None,
     p_reuse: float,
+    rng: random.Random,
     pre_plaintext_file=None,
 ):
-    """Yield ``(cleaned, tokens)`` for each line of ``input_path``.
+    """Yield ``(cleaned, tokens, retries)`` for each line of ``input_path``.
 
-    For non-blank lines, ``cleaned`` is the :func:`clean_line` output
-    and ``tokens`` is the ciphertext token list from
-    :func:`encrypt_naibbe_habit`. For blank lines, both are empty
-    (``""`` and ``[]``) so callers can preserve the input's line
+    For non-blank lines, ``cleaned`` is the :func:`clean_line` output,
+    ``tokens`` is the ciphertext token list from
+    :func:`encrypt_naibbe_habit`, and ``retries`` is the ambiguity retry
+    count for that line. For blank lines, all three are empty/zero
+    (``""``, ``[]``, ``0``) so callers can preserve the input's line
     structure in their output.
     """
     with open(input_path, "r", encoding="utf-8") as fin:
         for line in fin:
             cleaned = clean_line(line)
             if cleaned:
-                tokens = encrypt_naibbe_habit(
+                tokens, retries = encrypt_naibbe_habit(
                     cleaned,
                     naibbe_tables,
                     placeholder_to_glyph,
@@ -319,10 +336,12 @@ def iter_encrypted_lines(
                     pre_plaintext_file=pre_plaintext_file,
                     habit=habit,
                     p_reuse=p_reuse,
+                    rng=rng,
                 )
             else:
                 tokens = []
-            yield cleaned, tokens
+                retries = 0
+            yield cleaned, tokens, retries
 
 
 # === CLI ===
@@ -408,8 +427,12 @@ def main(argv: list[str] | None = None) -> None:
     """
     args = parse_args(argv)
 
+    # Seed the global random module so that naibbe_v2 functions (which use
+    # the global random for respacing, deck shuffling, and space dropping)
+    # are reproducible. The local rng controls only the habit coin flips.
     if args.seed is not None:
         random.seed(args.seed)
+    rng = random.Random(args.seed)
 
     if args.use_habit and args.buffer_size < 1:
         # argparse won't catch this for a default of 50; guard explicitly.
@@ -426,13 +449,17 @@ def main(argv: list[str] | None = None) -> None:
 
     habit = ScribalHabit(args.buffer_size) if args.use_habit else None
 
-    with open(args.output, "w", encoding="utf-8") as fout, \
-         open(args.respaced_output, "w", encoding="utf-8") as frespace, \
-         open(args.pre_plaintext_output, "w", encoding="utf-8") as fplain:
+    with (
+        open(args.output, "w", encoding="utf-8") as fout,
+        open(args.respaced_output, "w", encoding="utf-8") as frespace,
+        open(args.pre_plaintext_output, "w", encoding="utf-8") as fplain,
+    ):
 
-        for cleaned, encrypted_tokens in iter_encrypted_lines(
-            args.input, args.use_78, habit, args.p_reuse, fplain
+        total_ambiguity_retries = 0
+        for cleaned, encrypted_tokens, retries in iter_encrypted_lines(
+            args.input, args.use_78, habit, args.p_reuse, rng, fplain
         ):
+            total_ambiguity_retries += retries
             if cleaned:
                 line_out = " ".join(encrypted_tokens)
                 fout.write(line_out + "\n")
@@ -443,7 +470,7 @@ def main(argv: list[str] | None = None) -> None:
                 fplain.write("\n")
 
     if UNAMBIGUOUS:
-        print(f"Total ambiguity retries: {naibbe_v2.ambiguity_retries}")
+        print(f"Total ambiguity retries: {total_ambiguity_retries}")
 
     if args.use_habit and habit is not None:
         # `habit` is non-None here (constructed above when
