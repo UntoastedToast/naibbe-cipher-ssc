@@ -1,8 +1,25 @@
-# Quire extension of the Naibbe cipher: the manuscript is processed
-# bifolio by bifolio (4 pages per folded sheet). Pages are returned to
-# reading order after encryption, so reuse within a bifolio produces
-# long-range correlations across pages that are physically far apart
-# in the final text.
+"""
+Quire extension of the Naibbe cipher.
+
+This module implements a simulation of quire-based encryption to explore 
+whether the physical construction of the Voynich Manuscript (VMS) 
+contributes to its long-range autocorrelations. 
+
+Notes
+-----
+The VMS is made of quires of multiple bifolia. If a scribe encrypted the 
+text one bifolio at a time rather than in the final narrative order, they 
+could nonrandomly reuse tokens while encrypting across a given bifolio. 
+When the bifolio is folded and bound into a quire, these localized token 
+reuses produce long-range correlations across pages that are physically 
+far apart in the final text. This hypothesis is explored and tested as 
+proposed in Greshko [1]_.
+
+References
+----------
+.. [1] Greshko, M. A. (2025). The Naibbe cipher: a substitution cipher
+       that encrypts Latin and Italian as Voynich Manuscript-like.
+"""
 
 from __future__ import annotations
 
@@ -293,6 +310,16 @@ def encrypt_naibbe_quire(
     pre_plaintext_file=None,
 ) -> list[str]:
     """Encrypt plaintext with quire-based bifolio structure.
+
+    This function tests hypotheses proposed in Greshko (2025), "The Naibbe cipher
+    a substitution cipher that encrypts Latin and Italian as Voynich Manuscript-like",
+    exploring whether the physical construction of the Voynich Manuscript contributes
+    to long-range autocorrelations. As noted by Greshko, the VMS is made of quires
+    of multiple bifolia (each yielding four VMS pages). If encrypted one bifolio at
+    a time rather than in final narrative order, a scribe could nonrandomly reuse
+    tokens across a given bifolio. When folded into a quire, these local correlations
+    can manifest as long-range correlations on opposite sides of the quire,
+    potentially thousands of tokens apart.
 
     The plaintext is respaced, split into quires and bifolia, rearranged
     from reading order to bifolio encryption order, encrypted with

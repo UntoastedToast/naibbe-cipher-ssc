@@ -1,6 +1,25 @@
-# Habit extension of the Naibbe cipher: when a plaintext token recurs
-# within a short visibility window, the previously-written glyph is
-# copied instead of drawing a fresh substitution table card.
+"""
+Habit extension of the Naibbe cipher.
+
+This module implements a simulation of scribal habits to test hypotheses
+regarding the autocorrelations found in the Voynich Manuscript.
+When a plaintext token recurs within a short visibility window, the 
+previously-written glyph is copied instead of drawing a fresh substitution 
+table card. This simulates a habit that fades off over time as the coder 
+notices the repetition.
+
+Notes
+-----
+This implementation is based on the hypotheses discussed in Greshko [1]_,
+which builds upon the idea of scribal habits proposed by Matlach, Janečková,
+and Dostál. These habits include non-stochastic bursts of table use 
+or line-by-line reuse of ciphertext word types.
+
+References
+----------
+.. [1] Greshko, M. A. (2025). The Naibbe cipher: a substitution cipher
+       that encrypts Latin and Italian as Voynich Manuscript-like.
+"""
 
 from __future__ import annotations
 
@@ -131,6 +150,14 @@ def encrypt_naibbe_habit(
     p_reuse: float = 0.0,
 ) -> list[str]:
     """Encrypt ``plaintext`` with optional ScribalHabit reuse buffer.
+
+    This function tests hypotheses proposed in Greshko (2025), "The Naibbe cipher
+    a substitution cipher that encrypts Latin and Italian as Voynich Manuscript-like",
+    which explores whether the Voynich Manuscript's autocorrelations might arise
+    from human scribal habits. Following Matlach, Janečková, and Dostál (2022) as
+    cited by Greshko, these habits include non-stochastic bursts of table use, word
+    repetition, line-by-line reuse of ciphertext word types, and the fading off of
+    such repetitions as the coder notices them.
 
     Each plaintext token is hashed into a signature. If the signature
     is found in ``habit`` and the random check ``random() < p_reuse``
